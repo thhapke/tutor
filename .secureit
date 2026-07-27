@@ -1,5 +1,4 @@
-Readme.md
-tutor.md
-config.yml
-.gooseignore
-grammar
+*
+!target/
+!tmp/
+!dialogues/
