@@ -1,0 +1,16 @@
+# 1. Block access to absolute system paths and home directory traversal
+/*
+~/*
+/Users/*
+
+# 2. Block parent directory stepping
+../*
+../../*
+
+# 3. Whitelist ONLY your current project folder and its contents
+!/
+!/**/*
+
+# Ignore system noise
+.git/
+target/

@@ -1,0 +1,6 @@
+model: mistral-small3.2:latest
+TUTOR: Amelie
+TUTOR_GENDER: female
+USER: Thorsten
+EXPLANATION_LANGUAGE: German
+LEARNING_LANGUAGE: French

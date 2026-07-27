@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Amélie · Tutrice de Français</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app">
+        <!-- Hero header -->
+        <header class="hero">
+            <div class="avatar">A</div>
+            <div class="hero-text">
+                <h1 id="greeting">Bonjour</h1>
+                <p id="subtitle">Chargement…</p>
+            </div>
+            <span id="modelBadge" class="model-badge"></span>
+        </header>
+
+        <main class="layout">
+            <!-- Settings -->
+            <aside class="panel settings">
+                <h2>Paramètres</h2>
+
+                <div class="field">
+                    <label for="topic">Sujet de conversation</label>
+                    <input type="text" id="topic" placeholder="ex. les vacances, la cuisine…" autocomplete="off">
+                </div>
+
+                <div class="field">
+                    <label for="skillLevel">Niveau</label>
+                    <select id="skillLevel">
+                        <option value="">Choisir…</option>
+                        <option value="A1">A1 · Débutant</option>
+                        <option value="A2">A2 · Élémentaire</option>
+                        <option value="B1">B1 · Intermédiaire</option>
+                        <option value="B2">B2 · Intermédiaire avancé</option>
+                        <option value="C1">C1 · Avancé</option>
+                        <option value="C2">C2 · Maîtrise</option>
+                    </select>
+                </div>
+
+                <div class="field">
+                    <label for="grammarFocus">Point de grammaire</label>
+                    <select id="grammarFocus">
+                        <option value="">Choisir…</option>
+                    </select>
+                </div>
+
+                <button id="startBtn" class="btn-primary">Commencer la conversation</button>
+                <p class="hint">Les échanges sont enregistrés automatiquement dans <code>dialogues/</code>.</p>
+            </aside>
+
+            <!-- Chat -->
+            <section class="panel chat">
+                <div id="conversation" class="conversation">
+                    <div id="emptyState" class="empty-state">
+                        <div class="empty-emoji">🇫🇷</div>
+                        <p>Choisissez un sujet, un niveau et un point de grammaire,<br>puis lancez la conversation avec Amélie.</p>
+                    </div>
+                </div>
+
+                <form id="messageForm" class="composer disabled" autocomplete="off">
+                    <textarea id="userInput" rows="1" placeholder="Écrivez votre message en français…" disabled></textarea>
+                    <button type="submit" class="btn-send" aria-label="Envoyer">➤</button>
+                </form>
+            </section>
+
+            <!-- Translator -->
+            <aside class="panel translator">
+                <h2>Traducteur</h2>
+
+                <div class="field">
+                    <label for="translateInput" id="translateInputLabel">Allemand</label>
+                    <textarea id="translateInput" rows="3" placeholder="Écrivez en allemand…" autocomplete="off"></textarea>
+                </div>
+
+                <button id="translateBtn" class="btn-primary">Traduire</button>
+
+                <div class="field translate-out-field">
+                    <label id="translateOutputLabel">Français</label>
+                    <div id="translateOutput" class="translate-output" data-placeholder="La traduction apparaîtra ici…"></div>
+                </div>
+            </aside>
+        </main>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
