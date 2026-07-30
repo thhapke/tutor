@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -18,6 +19,9 @@ const OLLAMA_DEFAULT_URL: &str = "http://localhost:11434";
 
 #[derive(Clone)]
 struct AppState {
+    /// Directory that all runtime files/folders (config, grammar, tutor
+    /// template, dialogues, vocab) are resolved against.
+    base_dir: PathBuf,
     config: HashMap<String, String>,
     grammar_topics: Vec<GrammarTopic>,
     tutor_template: String,
@@ -29,13 +33,17 @@ struct AppState {
 struct GrammarTopic {
     title: String,
     description: String,
+    /// CEFR skill level this topic belongs to (e.g. "A1", "C1").
+    skill_level: String,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = load_config()?;
-    let grammar_topics = load_grammar_topics().unwrap_or_default();
-    let tutor_template = std::fs::read_to_string("tutor.md").unwrap_or_default();
+    let base_dir = parse_base_dir(std::env::args().skip(1))?;
+
+    let config = load_config(&base_dir)?;
+    let grammar_topics = load_grammar_topics(&base_dir).unwrap_or_default();
+    let tutor_template = std::fs::read_to_string(base_dir.join("tutor.md")).unwrap_or_default();
 
     let model = config
         .get("model")
@@ -47,9 +55,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| OLLAMA_DEFAULT_URL.to_string());
 
     // Make sure the dialogues directory exists.
-    let _ = std::fs::create_dir_all("dialogues");
+    let _ = std::fs::create_dir_all(base_dir.join("dialogues"));
 
     let state = Arc::new(AppState {
+        base_dir,
         config,
         grammar_topics,
         tutor_template,
@@ -65,31 +74,81 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Determine the base directory that all runtime files/folders are resolved
+/// against. Accepts either a positional path or `--dir <path>` / `-d <path>`;
+/// defaults to `.` (the current working directory) when no argument is given.
+fn parse_base_dir(
+    args: impl Iterator<Item = String>,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let mut base: Option<String> = None;
+    let mut args = args.peekable();
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--dir" | "-d" => {
+                let value = args
+                    .next()
+                    .ok_or("--dir requires a path argument")?;
+                base = Some(value);
+            }
+            other if other.starts_with("--dir=") => {
+                base = Some(other["--dir=".len()..].to_string());
+            }
+            // Bare positional path.
+            other if !other.starts_with('-') => {
+                base = Some(other.to_string());
+            }
+            other => return Err(format!("unknown argument: {other}").into()),
+        }
+    }
+
+    let dir = PathBuf::from(base.unwrap_or_else(|| ".".to_string()));
+    if !dir.is_dir() {
+        return Err(format!("base directory does not exist: {}", dir.display()).into());
+    }
+    Ok(dir)
+}
+
 // ---------------------------------------------------------------------------
 // Loading config / grammar / template
 // ---------------------------------------------------------------------------
 
-fn load_config() -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
-    let contents = std::fs::read_to_string("config.yml")?;
+fn load_config(base_dir: &Path) -> Result<HashMap<String, String>, Box<dyn std::error::Error>> {
+    let contents = std::fs::read_to_string(base_dir.join("config.yml"))?;
     let parsed: HashMap<String, String> = serde_yaml::from_str(&contents)?;
     Ok(parsed)
 }
 
-/// Parse `grammar/french.md`: every line starting with `#` is a topic title,
-/// the following non-heading lines form its description.
-fn load_grammar_topics() -> Result<Vec<GrammarTopic>, Box<dyn std::error::Error>> {
-    let content = std::fs::read_to_string("grammar/french.md")?;
+/// Parse `grammar/french.md` in the two-level format:
+///   `#`  headings set the current CEFR skill level (e.g. `# A1`),
+///   `##` headings define a grammar topic under that level,
+///   the following non-heading lines form the topic's description.
+///
+/// A `##` topic seen before any `#` level is filed under an empty level.
+fn load_grammar_topics(
+    base_dir: &Path,
+) -> Result<Vec<GrammarTopic>, Box<dyn std::error::Error>> {
+    let content = std::fs::read_to_string(base_dir.join("grammar/french.md"))?;
     let mut topics: Vec<GrammarTopic> = Vec::new();
+    let mut current_level = String::new();
 
     for line in content.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with('#') {
-            let title = trimmed.trim_start_matches('#').trim().to_string();
+        if let Some(rest) = trimmed.strip_prefix("##") {
+            // Grammar topic under the current skill level.
+            let title = rest.trim_start_matches('#').trim().to_string();
             if !title.is_empty() {
                 topics.push(GrammarTopic {
                     title,
                     description: String::new(),
+                    skill_level: current_level.clone(),
                 });
+            }
+        } else if let Some(rest) = trimmed.strip_prefix('#') {
+            // Skill-level heading.
+            let level = rest.trim().to_string();
+            if !level.is_empty() {
+                current_level = level;
             }
         } else if !trimmed.is_empty() {
             if let Some(last) = topics.last_mut() {
@@ -147,6 +206,18 @@ struct DialogueRequest {
 #[derive(Deserialize)]
 struct TranslateRequest {
     text: String,
+    /// Direction of translation. When true, translate from the learning
+    /// language back into the explanation language (the reverse of default).
+    #[serde(default)]
+    reverse: bool,
+}
+
+#[derive(Deserialize)]
+struct VocabRequest {
+    /// Word/phrase in the explanation language.
+    explanation: String,
+    /// Word/phrase in the learning language.
+    learning: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -160,8 +231,34 @@ fn api_routes(
         .and(warp::path!("api" / "grammar"))
         .and(with_state(state.clone()))
         .map(|state: Arc<AppState>| {
+            // Group topic titles by skill level, in fixed CEFR order.
+            const CEFR_ORDER: [&str; 6] = ["A1", "A2", "B1", "B2", "C1", "C2"];
+            let mut by_level: HashMap<String, Vec<&String>> = HashMap::new();
+            for t in &state.grammar_topics {
+                by_level.entry(t.skill_level.clone()).or_default().push(&t.title);
+            }
+
+            // Emit levels in CEFR order first, then any unrecognised levels
+            // in the order they were encountered.
+            let mut levels: Vec<Value> = Vec::new();
+            let mut seen: Vec<String> = Vec::new();
+            for lvl in CEFR_ORDER {
+                if let Some(titles) = by_level.get(lvl) {
+                    levels.push(json!({ "level": lvl, "topics": titles }));
+                    seen.push(lvl.to_string());
+                }
+            }
+            for t in &state.grammar_topics {
+                if !seen.contains(&t.skill_level) && !t.skill_level.is_empty() {
+                    let titles = &by_level[&t.skill_level];
+                    levels.push(json!({ "level": t.skill_level, "topics": titles }));
+                    seen.push(t.skill_level.clone());
+                }
+            }
+
+            // Flat list kept for backward compatibility with older clients.
             let titles: Vec<&String> = state.grammar_topics.iter().map(|t| &t.title).collect();
-            warp::reply::json(&json!({ "topics": titles }))
+            warp::reply::json(&json!({ "topics": titles, "levels": levels }))
         });
 
     let get_config = warp::get()
@@ -192,17 +289,35 @@ fn api_routes(
     // POST /api/dialogue -> save transcript to dialogues/.
     let post_dialogue = warp::post()
         .and(warp::path!("api" / "dialogue"))
+        .and(with_state(state.clone()))
         .and(warp::body::json())
-        .map(|req: DialogueRequest| match save_dialogue(&req) {
-            Ok(path) => warp::reply::json(&json!({ "status": "success", "path": path })),
-            Err(e) => warp::reply::json(&json!({ "status": "error", "message": e.to_string() })),
-        });
+        .map(
+            |state: Arc<AppState>, req: DialogueRequest| match save_dialogue(&state, &req) {
+                Ok(path) => warp::reply::json(&json!({ "status": "success", "path": path })),
+                Err(e) => warp::reply::json(&json!({ "status": "error", "message": e.to_string() })),
+            },
+        );
+
+    // POST /api/vocab -> append a word pair to vocab/<EXPL>_<LEARN>.csv.
+    let post_vocab = warp::post()
+        .and(warp::path!("api" / "vocab"))
+        .and(with_state(state.clone()))
+        .and(warp::body::json())
+        .map(
+            |state: Arc<AppState>, req: VocabRequest| match save_vocab(&state, &req) {
+                Ok(path) => warp::reply::json(&json!({ "status": "success", "path": path })),
+                Err(e) => {
+                    warp::reply::json(&json!({ "status": "error", "message": e.to_string() }))
+                }
+            },
+        );
 
     get_grammar
         .or(get_config)
         .or(post_chat)
         .or(post_translate)
         .or(post_dialogue)
+        .or(post_vocab)
 }
 
 fn static_routes() -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
@@ -240,7 +355,17 @@ fn with_state(
 /// Build the system primer from tutor.md + config + the request parameters.
 fn build_system_prompt(state: &AppState, req: &ChatRequest) -> String {
     let mut vars = state.config.clone();
-    vars.insert("TOPIC".to_string(), req.topic.clone());
+
+    // Topic is optional: when the user leaves it empty, instruct the tutor to
+    // choose a suitable topic itself instead of adhering to a fixed one.
+    let topic = if req.topic.trim().is_empty() {
+        "choisis toi-même un sujet adapté au niveau et au point de grammaire, \
+         puis annonce-le au début de la conversation"
+            .to_string()
+    } else {
+        req.topic.clone()
+    };
+    vars.insert("TOPIC".to_string(), topic);
     vars.insert("SKILL_LEVEL".to_string(), req.skill_level.clone());
 
     // Expand the grammar focus with its description (if we have one on file).
@@ -290,16 +415,23 @@ fn translate_stream(
     state: Arc<AppState>,
     req: TranslateRequest,
 ) -> impl futures_util::Stream<Item = Result<Event, Infallible>> {
-    let from = state
+    let explanation = state
         .config
         .get("EXPLANATION_LANGUAGE")
         .cloned()
         .unwrap_or_else(|| "German".to_string());
-    let to = state
+    let learning = state
         .config
         .get("LEARNING_LANGUAGE")
         .cloned()
         .unwrap_or_else(|| "French".to_string());
+
+    // Default direction is explanation -> learning; `reverse` flips it.
+    let (from, to) = if req.reverse {
+        (learning, explanation)
+    } else {
+        (explanation, learning)
+    };
 
     let system = format!(
         "You are a translation engine. Translate the user's text from {from} to {to}. \
@@ -415,22 +547,30 @@ fn slugify(input: &str) -> String {
     }
 }
 
-fn save_dialogue(req: &DialogueRequest) -> Result<String, Box<dyn std::error::Error>> {
+fn save_dialogue(
+    state: &AppState,
+    req: &DialogueRequest,
+) -> Result<String, Box<dyn std::error::Error>> {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    let filename = format!(
+    let filename = state.base_dir.join(format!(
         "dialogues/{}-{}-{}-{}.md",
         slugify(&req.topic),
         slugify(&req.grammar),
         slugify(&req.skill_level),
         ts
-    );
+    ));
 
     let mut body = String::new();
-    body.push_str(&format!("# {}\n\n", req.topic));
+    let heading = if req.topic.trim().is_empty() {
+        "Sujet libre"
+    } else {
+        &req.topic
+    };
+    body.push_str(&format!("# {}\n\n", heading));
     body.push_str(&format!(
         "- Grammaire: {}\n- Niveau: {}\n\n---\n\n",
         req.grammar, req.skill_level
@@ -445,5 +585,59 @@ fn save_dialogue(req: &DialogueRequest) -> Result<String, Box<dyn std::error::Er
     }
 
     std::fs::write(&filename, body)?;
-    Ok(filename)
+    Ok(filename.display().to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Vocabulary persistence
+// ---------------------------------------------------------------------------
+
+/// Append a word pair to `vocab/<EXPLANATION_LANGUAGE>_<LEARNING_LANGUAGE>.csv`.
+///
+/// The file uses `:` as the field separator, with a header line
+/// `<EXPLANATION_LANGUAGE>:<LEARNING_LANGUAGE>`. The header is written once,
+/// when the file is first created.
+fn save_vocab(state: &AppState, req: &VocabRequest) -> Result<String, Box<dyn std::error::Error>> {
+    use std::io::Write;
+
+    let explanation = state
+        .config
+        .get("EXPLANATION_LANGUAGE")
+        .cloned()
+        .unwrap_or_else(|| "German".to_string());
+    let learning = state
+        .config
+        .get("LEARNING_LANGUAGE")
+        .cloned()
+        .unwrap_or_else(|| "French".to_string());
+
+    let expl = req.explanation.trim();
+    let learn = req.learning.trim();
+    if expl.is_empty() || learn.is_empty() {
+        return Err("both words are required".into());
+    }
+
+    std::fs::create_dir_all(state.base_dir.join("vocab"))?;
+    let filename = state
+        .base_dir
+        .join(format!("vocab/{}_{}.csv", explanation, learning));
+
+    // A `:` in a field would corrupt the column split; guard against it by
+    // rejecting the pair rather than silently writing a broken row.
+    if expl.contains(':') || learn.contains(':') {
+        return Err("words must not contain ':'".into());
+    }
+
+    let need_header = !filename.exists();
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&filename)?;
+
+    if need_header {
+        writeln!(file, "{}:{}", explanation, learning)?;
+    }
+    writeln!(file, "{}:{}", expl, learn)?;
+
+    Ok(filename.display().to_string())
 }

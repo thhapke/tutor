@@ -209,33 +209,6 @@ input:focus, select:focus, textarea:focus {
 
 .translate-out-field { margin-top: 16px; margin-bottom: 0; }
 
-/* Output is a div (not a textarea) so it can render bold/italics etc. */
-.translate-output {
-  min-height: 78px;
-  padding: 11px 13px;
-  font: inherit;
-  color: var(--text);
-  background: var(--surface-2);
-  border: 1.5px solid var(--border);
-  border-radius: var(--radius-sm);
-  line-height: 1.4;
-  white-space: pre-wrap;
-  word-wrap: break-word;
-}
-.translate-output:empty::before {
-  content: attr(data-placeholder);
-  color: var(--text-soft);
-}
-.translate-output strong, .translate-output b { font-weight: 600; }
-.translate-output em, .translate-output i { font-style: italic; }
-.translate-output code {
-  background: var(--surface);
-  padding: 1px 5px;
-  border-radius: 5px;
-  border: 1px solid var(--border);
-  font-size: 0.9em;
-}
-
 /* Chat ---------------------------------------------------------------- */
 .chat {
   display: flex;

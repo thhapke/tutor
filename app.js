@@ -14,9 +14,10 @@ document.addEventListener("DOMContentLoaded", () => {
     emptyState: document.getElementById("emptyState"),
     translateInput: document.getElementById("translateInput"),
     translateOutput: document.getElementById("translateOutput"),
-    translateBtn: document.getElementById("translateBtn"),
     translateInputLabel: document.getElementById("translateInputLabel"),
     translateOutputLabel: document.getElementById("translateOutputLabel"),
+    vocabBtn: document.getElementById("vocabBtn"),
+    vocabStatus: document.getElementById("vocabStatus"),
     modelBadge: document.getElementById("modelBadge"),
   };
 
@@ -31,11 +32,30 @@ document.addEventListener("DOMContentLoaded", () => {
     translating: false,
   };
 
+  // Grammar topics grouped by CEFR level, filled from /api/grammar.
+  // { "A1": ["Présent", …], "C1": [ … ] }
+  const grammarByLevel = {};
+
+  // Human-readable label suffix per CEFR level (French UI).
+  const LEVEL_LABELS = {
+    A1: "Débutant",
+    A2: "Élémentaire",
+    B1: "Intermédiaire",
+    B2: "Intermédiaire avancé",
+    C1: "Avancé",
+    C2: "Maîtrise",
+  };
+
   loadGrammarTopics();
   loadGreeting();
 
   els.startBtn.addEventListener("click", startConversation);
   els.messageForm.addEventListener("submit", onSend);
+
+  // Grammar topics depend on the chosen skill level.
+  els.skillLevel.addEventListener("change", () => {
+    fillGrammar(grammarByLevel[els.skillLevel.value] || []);
+  });
 
   // Enter to send, Shift+Enter for newline.
   els.userInput.addEventListener("keydown", (e) => {
@@ -46,13 +66,36 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   els.userInput.addEventListener("input", autoGrow);
 
-  els.translateBtn.addEventListener("click", translate);
+  els.vocabBtn.addEventListener("click", saveVocab);
 
-  // Enter to translate, Shift+Enter for newline.
+  // The translator is bidirectional: typing in one field clears the other
+  // (and the vocab status), and Enter translates into the now-empty field.
+  // `reverse` tells the backend to translate learning -> explanation instead
+  // of the default explanation -> learning direction.
+
+  // Upper field = explanation language (default source).
+  els.translateInput.addEventListener("input", () => {
+    if (session.translating) return;
+    els.translateOutput.value = "";
+    clearVocabStatus();
+  });
   els.translateInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      translate();
+      translate(els.translateInput, els.translateOutput, false);
+    }
+  });
+
+  // Lower field = learning language (reverse source).
+  els.translateOutput.addEventListener("input", () => {
+    if (session.translating) return;
+    els.translateInput.value = "";
+    clearVocabStatus();
+  });
+  els.translateOutput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      translate(els.translateOutput, els.translateInput, true);
     }
   });
 
@@ -64,16 +107,41 @@ document.addEventListener("DOMContentLoaded", () => {
     try {
       const res = await fetch("/api/grammar");
       const data = await res.json();
-      const topics = (data && data.topics) || [];
-      fillGrammar(topics.length ? topics : fallbackTopics());
+      const levels = (data && data.levels) || [];
+      if (levels.length) {
+        populateLevels(levels);
+      } else {
+        // Fallback: no level grouping available — show a flat list under A1.
+        const topics = (data && data.topics) || fallbackTopics();
+        populateLevels([{ level: "A1", topics }]);
+      }
     } catch (err) {
       console.error("grammar load failed", err);
-      fillGrammar(fallbackTopics());
+      populateLevels([{ level: "A1", topics: fallbackTopics() }]);
     }
   }
 
   function fallbackTopics() {
     return ["Présent", "Passé Composé", "Imparfait", "Futur Simple"];
+  }
+
+  // Fill the skill-level dropdown from the grouped grammar data and stash
+  // each level's topics so the grammar dropdown can react to level changes.
+  function populateLevels(levels) {
+    for (const key of Object.keys(grammarByLevel)) delete grammarByLevel[key];
+
+    while (els.skillLevel.options.length > 1) els.skillLevel.remove(1);
+    levels.forEach(({ level, topics }) => {
+      grammarByLevel[level] = topics || [];
+      const opt = document.createElement("option");
+      opt.value = level;
+      const label = LEVEL_LABELS[level];
+      opt.textContent = label ? `${level} · ${label}` : level;
+      els.skillLevel.appendChild(opt);
+    });
+
+    // Reset the grammar dropdown until a level is chosen.
+    fillGrammar(grammarByLevel[els.skillLevel.value] || []);
   }
 
   function fillGrammar(topics) {
@@ -94,7 +162,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const tutor = cfg.TUTOR || "Amélie";
       const user = cfg.USER || "";
       els.greeting.textContent = user ? `Bonjour ${user}` : "Bonjour";
-      els.subtitle.textContent = `Je suis ${tutor}, votre tutrice de ${cfg.LEARNING_LANGUAGE || "français"}.`;
+      els.subtitle.textContent = `Je suis ${tutor}, votre tutrice de ${languageLabel(cfg.LEARNING_LANGUAGE) || "français"}.`;
       document.querySelector(".avatar").textContent = tutor
         .charAt(0)
         .toUpperCase();
@@ -107,13 +175,29 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  // Display names (French UI) for the English language codes stored in config.
+  const LANGUAGE_LABELS = {
+    German: "Allemand",
+    French: "Français",
+    English: "Anglais",
+    Spanish: "Espagnol",
+    Italian: "Italien",
+  };
+
+  // Render a configured (English) language name in the French UI. Falls back to
+  // the raw value when no mapping exists.
+  function languageLabel(name) {
+    return (name && LANGUAGE_LABELS[name]) || name;
+  }
+
   // Set the translator field labels/placeholders from the configured languages.
   function applyTranslatorLabels(explanation, learning) {
-    const from = explanation || "Allemand";
-    const to = learning || "Français";
+    const from = languageLabel(explanation) || "Allemand";
+    const to = languageLabel(learning) || "Français";
     els.translateInputLabel.textContent = from;
     els.translateOutputLabel.textContent = to;
     els.translateInput.placeholder = `Écrivez en ${from.toLowerCase()}…`;
+    els.translateOutput.placeholder = `Écrivez en ${to.toLowerCase()}…`;
   }
 
   // -------------------------------------------------------------------------
@@ -125,7 +209,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const skillLevel = els.skillLevel.value;
     const grammar = els.grammarFocus.value;
 
-    if (!topic || !skillLevel || !grammar) {
+    if (!skillLevel || !grammar) {
       flashMissing();
       return;
     }
@@ -271,24 +355,26 @@ document.addEventListener("DOMContentLoaded", () => {
   // Translator
   // -------------------------------------------------------------------------
 
-  // Translate the upper field (explanation language) into the lower field
-  // (learning language) via /api/translate. Streams the reply as SSE, like chat.
-  async function translate() {
+  // Translate `srcEl`'s text into `dstEl` via /api/translate. Streams the
+  // reply as SSE, like chat. `reverse` flips the backend direction so either
+  // field can be the source.
+  async function translate(srcEl, dstEl, reverse) {
     if (session.translating) return;
 
-    const text = els.translateInput.value.trim();
+    const text = srcEl.value.trim();
     if (!text) return;
 
     session.translating = true;
-    els.translateBtn.disabled = true;
-    els.translateOutput.innerHTML = "";
+    els.vocabBtn.disabled = true;
+    clearVocabStatus();
+    dstEl.value = "";
 
     let acc = "";
     try {
       const res = await fetch("/api/translate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, reverse: !!reverse }),
       });
 
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
@@ -318,18 +404,62 @@ document.addEventListener("DOMContentLoaded", () => {
               acc += evt.data;
             }
           }
-          els.translateOutput.innerHTML = renderMarkdown(acc);
+          dstEl.value = acc;
         }
       }
     } catch (err) {
       console.error("translate failed", err);
       if (!acc) acc = "⚠️ Traduction impossible. Ollama est-il démarré ?";
-      els.translateOutput.innerHTML = renderMarkdown(acc);
+      dstEl.value = acc;
     } finally {
-      if (!acc.trim()) els.translateOutput.textContent = "…";
       session.translating = false;
-      els.translateBtn.disabled = false;
+      els.vocabBtn.disabled = false;
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Vocabulary
+  // -------------------------------------------------------------------------
+
+  // Append the current word pair to vocab/<EXPL>_<LEARN>.csv. The upper field
+  // is always the explanation language, the lower the learning language,
+  // regardless of which one was typed and which was translated.
+  async function saveVocab() {
+    const explanation = els.translateInput.value.trim();
+    const learning = els.translateOutput.value.trim();
+    if (!explanation || !learning) {
+      showVocabStatus("Remplissez les deux champs d'abord.", true);
+      return;
+    }
+
+    els.vocabBtn.disabled = true;
+    try {
+      const res = await fetch("/api/vocab", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ explanation, learning }),
+      });
+      const data = await res.json();
+      if (data && data.status === "success") {
+        showVocabStatus("Ajouté au vocabulaire ✓", false);
+      } else {
+        showVocabStatus(`Échec : ${(data && data.message) || "erreur"}`, true);
+      }
+    } catch (err) {
+      console.error("vocab save failed", err);
+      showVocabStatus("Échec de l'enregistrement.", true);
+    } finally {
+      els.vocabBtn.disabled = false;
+    }
+  }
+
+  function showVocabStatus(msg, isError) {
+    els.vocabStatus.textContent = msg;
+    els.vocabStatus.style.color = isError ? "var(--danger, #c0392b)" : "";
+  }
+
+  function clearVocabStatus() {
+    els.vocabStatus.textContent = "";
   }
 
   // Render a small subset of Markdown (**bold**, *italic*, `code`) to safe HTML.
@@ -382,7 +512,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function flashMissing() {
-    [els.topic, els.skillLevel, els.grammarFocus].forEach((el) => {
+    [els.skillLevel, els.grammarFocus].forEach((el) => {
       if (!el.value) {
         el.classList.add("field-error");
         setTimeout(() => el.classList.remove("field-error"), 1200);
